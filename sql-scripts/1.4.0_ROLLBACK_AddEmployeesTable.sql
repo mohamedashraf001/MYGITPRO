@@ -1,8 +1,8 @@
 USE [HR_System_DB];
 GO
 
-IF OBJECT_ID('dbo.Employees', 'U') IS NOT NULL
+IF OBJECT_ID('dbo.medo', 'U') IS NOT NULL
 BEGIN
-    DROP TABLE dbo.Employees;
+    DROP TABLE dbo.medo;
 END
 GO

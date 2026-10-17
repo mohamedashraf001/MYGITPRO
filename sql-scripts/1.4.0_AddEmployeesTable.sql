@@ -2,7 +2,7 @@ USE [HR_System_DB];
 GO
 
 
-CREATE TABLE Employees (
+CREATE TABLE medo (
     EmployeeId INT IDENTITY(1,1) PRIMARY KEY,
     FullName NVARCHAR(150) NOT NULL,
     Department NVARCHAR(100) NULL,
@@ -10,5 +10,5 @@ CREATE TABLE Employees (
 );
 GO
 
-INSERT INTO Employees (FullName, Department) VALUES ('Mohamed Ashraf', 'IT Support');
+INSERT INTO medo (FullName, Department) VALUES ('Mohamed Ashraf', 'IT Support');
 GO
