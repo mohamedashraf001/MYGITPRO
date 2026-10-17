@@ -1,0 +1,126 @@
+trigger:
+  branches:
+    include:
+      - main  # البايب لاين هيشتغل لما يحصل دمج على الـ main
+  paths:
+    include:
+      - sql-scripts/*  # هيراقب الفولدر ده بس
+
+pool:
+  name: 'Local-DB-Pool' # اسم الـ Agent اللي هنسطبه على جهازك
+
+variables:
+  SQL_SERVER: 'DESKTOP-5ESJKMQ'
+  DATABASE_NAME: 'HR_System_DB'
+
+jobs:
+- job: Database_Deployment
+  displayName: 'Validate and Deploy SQL Scripts'
+  steps:
+
+  # ==================================================
+  # TASK 1: Pre-Deployment Validation (Rollback Check)
+  # ==================================================
+  - task: PowerShell@2
+    displayName: '1. Validate Rollback Files'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $sqlDir = "$(Build.SourcesDirectory)\sql-scripts"
+        
+        Write-Host "Scanning directory: $sqlDir"
+        if (-not (Test-Path $sqlDir)) {
+            Write-Host "##vso[task.logissue type=error]Directory not found!"
+            exit 1
+        }
+
+        # جلب ملفات التحديث فقط (بدون الـ Rollback)
+        $migrations = Get-ChildItem -Path $sqlDir -Filter "*.sql" | Where-Object { $_.Name -notmatch "_ROLLBACK_" }
+        $missingRollbacks = 0
+        
+        foreach ($file in $migrations) {
+            $version = ($file.Name -split '_')[0]
+            $expectedRollback = "$version`_ROLLBACK_*.sql"
+            $rollbackExists = Get-ChildItem -Path $sqlDir -Filter $expectedRollback
+            
+            if (-not $rollbackExists) {
+                Write-Host "##vso[task.logissue type=error]MISSING ROLLBACK for Version '$version' (File: $($file.Name))"
+                $missingRollbacks++
+            } else {
+                Write-Host "[OK] Found rollback for Version $version"
+            }
+        }
+        
+        if ($missingRollbacks -gt 0) {
+            Write-Host "##vso[task.complete result=Failed;]Validation failed. Missing $missingRollbacks rollback script(s)."
+            exit 1
+        }
+        Write-Host "Validation Passed! All migration scripts have rollback scripts."
+
+  # ==================================================
+  # TASK 2: Execute Deployments (Loop & Idempotency)
+  # ==================================================
+  - task: PowerShell@2
+    displayName: '2. Execute SQL Scripts'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $sqlDir = "$(Build.SourcesDirectory)\sql-scripts"
+        $server = "$(SQL_SERVER)"
+        $database = "$(DATABASE_NAME)"
+        
+        # ترتيب الملفات تصاعدياً
+        $sqlFiles = Get-ChildItem -Path $sqlDir -Filter "*.sql" | Where-Object { $_.Name -notmatch "_ROLLBACK_" } | Sort-Object Name
+        
+        foreach ($file in $sqlFiles) {
+            $fileName = $file.BaseName
+            $version = ($fileName -split '_')[0]
+            $scriptName = ($fileName -split '_', 2)[1]
+            if ([string]::IsNullOrEmpty($scriptName)) { $scriptName = "No_Description" }
+
+            Write-Host "=================================================="
+            Write-Host "Processing Version: $version | Script: $scriptName"
+            
+            # 1. فحص وجود قاعدة البيانات
+            $dbCheckQuery = "SET NOCOUNT ON; IF EXISTS (SELECT 1 FROM sys.databases WHERE name = '$database') PRINT 'DB_EXISTS' ELSE PRINT 'DB_NOT_EXISTS';"
+            $dbCheck = sqlcmd -S "$server" -E -C -d "master" -h -1 -W -Q "$dbCheckQuery"
+            
+            $targetDb = $database
+            if ($dbCheck -match "DB_NOT_EXISTS") {
+                Write-Host "[INFO] Database is NEW. Script will run against 'master'."
+                $targetDb = "master"
+            } else {
+                # 2. فحص وجود الـ Version في قاعدة البيانات
+                $verCheckQuery = "SET NOCOUNT ON; IF OBJECT_ID('dbo.migration_version', 'U') IS NOT NULL BEGIN IF EXISTS (SELECT 1 FROM dbo.migration_version WHERE version = '$version') PRINT 'VER_EXISTS' ELSE PRINT 'VER_NEW' END ELSE PRINT 'TABLE_NOT_EXISTS';"
+                $verCheck = sqlcmd -S "$server" -E -C -d "$database" -h -1 -W -Q "$verCheckQuery"
+                
+                if ($verCheck -match "VER_EXISTS") {
+                    Write-Host "[SKIPPED] Version '$version' is already applied. Skipping..."
+                    continue
+                }
+            }
+            
+            # 3. تنفيذ ملف الـ SQL
+            Write-Host "[RUNNING] Executing $($file.Name) on $targetDb..."
+            sqlcmd -S "$server" -E -C -b -d "$targetDb" -i "$($file.FullName)"
+            
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "##vso[task.logissue type=error]SQL Execution failed for $($file.Name)!"
+                exit 1
+            }
+            
+            # 4. تسجيل الـ Version
+            Write-Host "[SUCCESS] Registering Version '$version'..."
+            $sqlSchema = "USE [$database]; IF OBJECT_ID('dbo.migration_version', 'U') IS NULL BEGIN CREATE TABLE dbo.migration_version (version NVARCHAR(50) PRIMARY KEY, script_name NVARCHAR(255), applied_at DATETIME DEFAULT GETDATE()); END ELSE BEGIN IF COL_LENGTH('dbo.migration_version', 'script_name') IS NULL ALTER TABLE dbo.migration_version ADD script_name NVARCHAR(255); END;"
+            sqlcmd -S "$server" -E -C -b -d "master" -Q "$sqlSchema"
+            
+            $sqlInsert = "USE [$database]; INSERT INTO dbo.migration_version (version, script_name) VALUES ('$version', '$scriptName');"
+            sqlcmd -S "$server" -E -C -b -d "master" -Q "$sqlInsert"
+            
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "##vso[task.logissue type=error]Failed to register version in table!"
+                exit 1
+            }
+            
+            Write-Host "[COMPLETED] Version '$version' successfully deployed."
+        }
