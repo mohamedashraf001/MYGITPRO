@@ -19,10 +19,10 @@ jobs:
   steps:
 
   # ==================================================
-  # TASK 1: Pre-Deployment Validation (Rollback Check)
+  # TASK 1: Pre-Deployment Validation (Rollback & Sequence Check)
   # ==================================================
   - task: PowerShell@2
-    displayName: '1. Validate Rollback Files'
+    displayName: '1. Validate Rollbacks and Version Sequence'
     inputs:
       targetType: 'inline'
       script: |
@@ -34,20 +34,32 @@ jobs:
             exit 1
         }
 
-        # جلب ملفات التحديث فقط (بدون الـ Rollback)
-        $migrations = Get-ChildItem -Path $sqlDir -Filter "*.sql" | Where-Object { $_.Name -notmatch "_ROLLBACK_" }
+        # جلب ملفات التحديث فقط (بدون الـ Rollback) وترتيبها تصاعدياً بشكل صحيح حسب الفيرشن
+        $migrations = Get-ChildItem -Path $sqlDir -Filter "*.sql" | Where-Object { $_.Name -notmatch "_ROLLBACK_" } | Sort-Object { [Version]($_.Name -split '_')[0] }
+        
         $missingRollbacks = 0
+        $versionsList = @()
         
         foreach ($file in $migrations) {
-            $version = ($file.Name -split '_')[0]
-            $expectedRollback = "$version`_ROLLBACK_*.sql"
+            $versionStr = ($file.Name -split '_')[0]
+            
+            # 1. التحقق من وجود فايل الـ Rollback
+            $expectedRollback = "$versionStr`_ROLLBACK_*.sql"
             $rollbackExists = Get-ChildItem -Path $sqlDir -Filter $expectedRollback
             
             if (-not $rollbackExists) {
-                Write-Host "##vso[task.logissue type=error]MISSING ROLLBACK for Version '$version' (File: $($file.Name))"
+                Write-Host "##vso[task.logissue type=error]MISSING ROLLBACK for Version '$versionStr' (File: $($file.Name))"
                 $missingRollbacks++
             } else {
-                Write-Host "[OK] Found rollback for Version $version"
+                Write-Host "[OK] Found rollback for Version $versionStr"
+            }
+            
+            # جمع الفيرشنات لمراجعة التسلسل
+            try {
+                $versionsList += [Version]$versionStr
+            } catch {
+                Write-Host "##vso[task.logissue type=error]Invalid version format found: '$versionStr' in file $($file.Name). Must follow semantic versioning like 1.0.0"
+                exit 1
             }
         }
         
@@ -55,7 +67,31 @@ jobs:
             Write-Host "##vso[task.complete result=Failed;]Validation failed. Missing $missingRollbacks rollback script(s)."
             exit 1
         }
-        Write-Host "Validation Passed! All migration scripts have rollback scripts."
+
+        # 2. فحص الفجوات في الإصدارات (Version Gap Check)
+        if ($versionsList.Count -gt 1) {
+            for ($i = 0; $i -lt ($versionsList.Count - 1); $i++) {
+                $current = $versionsList[$i]
+                $next = $versionsList[$i+1]
+                
+                # مقارنة الأجزاء الأساسية (Major.Minor.Patch) للتأكد من التسلسل الخطمي المباشر
+                # السماح بزيادة بمقدار 1 في الـ Patch أو Minor أو Major حسب المنطق المتبع، هنا سنفحص التسلسل التدريجي المتوقع
+                $diffMinor = $next.Minor - $current.Minor
+                $diffPatch = $next.Build - $current.Build
+                
+                # لو فيه نطرة غير منطقية في الإصدارات (مثلاً الانتقال من 1.3 إلى 1.5 مباشرة بدون 1.4)
+                if (($next.Major -eq $current.Major) -and ($next.Minor -eq $current.Minor) -and ($diffPatch -gt 1)) {
+                    Write-Host "##vso[task.logissue type=error]Version Gap Detected! Jumped from $($current) to $($next). Missing intermediate patch version!"
+                    exit 1
+                }
+                if (($next.Major -eq $current.Major) -and ($diffMinor -gt 1)) {
+                    Write-Host "##vso[task.logissue type=error]Version Gap Detected! Jumped from $($current) to $($next). Missing intermediate minor version!"
+                    exit 1
+                }
+            }
+        }
+        
+        Write-Host "Validation Passed! All migration scripts have rollbacks and follow strict sequential order."
 
   # ==================================================
   # TASK 2: Execute Deployments (Loop & Idempotency)
@@ -69,8 +105,8 @@ jobs:
         $server = "$(SQL_SERVER)"
         $database = "$(DATABASE_NAME)"
         
-        # ترتيب الملفات تصاعدياً
-        $sqlFiles = Get-ChildItem -Path $sqlDir -Filter "*.sql" | Where-Object { $_.Name -notmatch "_ROLLBACK_" } | Sort-Object Name
+        # ترتيب الملفات تصاعدياً باستخدام تحويل النص إلى كائن Version لضمان دقة الترتيب
+        $sqlFiles = Get-ChildItem -Path $sqlDir -Filter "*.sql" | Where-Object { $_.Name -notmatch "_ROLLBACK_" } | Sort-Object { [Version]($_.Name -split '_')[0] }
         
         foreach ($file in $sqlFiles) {
             $fileName = $file.BaseName
