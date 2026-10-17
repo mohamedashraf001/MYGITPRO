@@ -7,7 +7,7 @@ trigger:
       - sql-scripts/*  # هيراقب الفولدر ده بس
 
 pool:
-  name: 'Local-DB-Pool' # اسم الـ Agent اللي هنسطبه على جهازك
+  name: 'Default' # اسم الـ Agent اللي هنسطبه على جهازك
 
 variables:
   SQL_SERVER: 'DESKTOP-5ESJKMQ'
