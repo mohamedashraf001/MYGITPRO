@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 title Smart SQL Deployment (Strict Versioning)
 
 echo ==================================================
-echo SQL Deployment (Strict Version Checking)
+echo roll out script
 echo ==================================================
 
 set "SERVER=DESKTOP-5ESJKMQ"
@@ -78,7 +78,7 @@ set "TARGET_DB=%DATABASE%"
 if /I "!DB_STATE!"=="DB_NOT_EXISTS" (
     echo [INFO] Database '%DATABASE%' is NEW. Script will run against 'master'.
     set "TARGET_DB=master"
-) else (
+) else (    
     echo [INFO] Database '%DATABASE%' EXISTS. Checking version history...
     
     REM Check migration_version Table & strict VERSION
@@ -137,11 +137,11 @@ REM Register Version (Fixed: Split Schema & Data)
 REM ==================================================
 echo [SUCCESS] SQL script applied. Registering version '%VERSION%' in database %DATABASE%...
 
-REM الخطوة الأولى: التجهيز (إنشاء الجدول أو إضافة العمود لو مش موجودين)
+REM 
 set "SQL_SCHEMA=USE [%DATABASE%]; IF OBJECT_ID('dbo.migration_version', 'U') IS NULL BEGIN CREATE TABLE dbo.migration_version (version NVARCHAR(50) PRIMARY KEY, script_name NVARCHAR(255), applied_at DATETIME DEFAULT GETDATE()); END ELSE BEGIN IF COL_LENGTH('dbo.migration_version', 'script_name') IS NULL ALTER TABLE dbo.migration_version ADD script_name NVARCHAR(255); END;"
 sqlcmd -S "%SERVER%" -E -C -b -d master -Q "!SQL_SCHEMA!" >> "%LOG%" 2>&1
 
-REM الخطوة الثانية: الإضافة الفعالة (تسجيل البيانات)
+REM 
 set "SQL_INSERT=USE [%DATABASE%]; INSERT INTO dbo.migration_version (version, script_name) VALUES ('%VERSION%', '%SCRIPT_NAME%');"
 sqlcmd -S "%SERVER%" -E -C -b -d master -Q "!SQL_INSERT!" >> "%LOG%" 2>&1
 
