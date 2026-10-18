@@ -15,7 +15,7 @@ REM ==================================================
 set "DATABASE="
 set /p "DATABASE=Enter Database Name to ROLLBACK: "
 
-REM هنا كان الخطأ: تم التعديل لـ ==
+REM 
 if "%DATABASE%"=="" (
     echo [ERROR] No database name entered! Cancelled.
     pause
